@@ -110,30 +110,32 @@ bool AP_RangeFinder_USD1_Serial::get_reading(float &reading_m)
         return false;
     }
 
-    
     if (!detect_version()) {
         // return false if USD1_Serial version check failed
         return false;
     }
 
-    // read any available lines from the USD1_Serial
-    float sum = 0;
-    uint16_t count = 0;
+    // MODIFICATION START: Removed 'sum' logic to eliminate latency
+    float latest_reading = 0; 
+    uint16_t valid_packets_found = 0;
     bool hdr_found = false;
 
+    // read any available lines from the USD1_Serial buffer
     for (auto i=0; i<8192; i++) {
         uint8_t c;
         if (!uart->read(c)) {
-            break;
+            break; // Buffer is empty, break out of the loop
         }
         if ((c == _header) && !hdr_found) {
             // located header byte
             _linebuf_len = 0;
             hdr_found   = true;
         }
-        // decode index information
+        
+        // decode index information using standard array indexing
         if (hdr_found) {
-            _linebuf[_linebuf_len++] = c;
+            _linebuf[_linebuf_len] = c;
+            _linebuf_len++;
 
             if ((_linebuf_len < (sizeof(_linebuf)/sizeof(_linebuf[0]))) ||
                 (_version == 0 && _linebuf_len < 3)) {
@@ -143,15 +145,16 @@ bool AP_RangeFinder_USD1_Serial::get_reading(float &reading_m)
                 continue;
             } else {
                 if (_version == 0 && _header != USD1_HDR) {
-                    // parse data for Firmware Version #0
-                    sum += (_linebuf[2]&0x7F)*128 + (_linebuf[1]&0x7F);
-                    count++;
+                    // Firmware Version 0: Overwrite with latest byte data
+                    latest_reading = (_linebuf[2]&0x7F)*128 + (_linebuf[1]&0x7F);
+                    valid_packets_found++;
                 } else {
-                    // evaluate checksum
+                    // Firmware Version 1: evaluate checksum
                     if (((_linebuf[1] + _linebuf[2] + _linebuf[3] + _linebuf[4]) & 0xFF) == _linebuf[5]) {
-                        // if checksum passed, parse data for Firmware Version #1
-                        sum += _linebuf[3]*256 + _linebuf[2];
-                        count++;
+                        // Checksum passed. We overwrite 'latest_reading' instead of adding to a sum.
+                        // This drops old buffered packets and ensures 0ms serial delay.
+                        latest_reading = _linebuf[3]*256 + _linebuf[2];
+                        valid_packets_found++;
                     }
                 }
 
@@ -161,15 +164,18 @@ bool AP_RangeFinder_USD1_Serial::get_reading(float &reading_m)
         }
     }
 
-    if (count == 0) {
+    // If no new valid packets were found in the buffer, return false so FC uses its last known good state
+    if (valid_packets_found == 0) {
         return false;
     }
 
-    reading_m = (sum * 0.01) / count;
+    // Output only the absolute newest reading in meters
+    reading_m = latest_reading * 0.01;
 
     if (_version == 0 && _header != USD1_HDR) {
         reading_m *= 2.5;
     }
+    // MODIFICATION END
 
     return true;
 }

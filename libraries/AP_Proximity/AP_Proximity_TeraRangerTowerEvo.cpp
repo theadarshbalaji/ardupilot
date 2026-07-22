@@ -118,6 +118,10 @@ bool AP_Proximity_TeraRangerTowerEvo::read_sensor_data()
         }
     }
 
+    // MODIFICATION START: Setup basic array indexing to filter out stale packets
+    uint16_t latest_distances[8] = {0};
+    bool packet_is_valid = false;
+
     while (nbytes-- > 0) {
         int16_t c = _uart->read();
         if (c==-1) {
@@ -126,7 +130,8 @@ bool AP_Proximity_TeraRangerTowerEvo::read_sensor_data()
         if (char(c) == 'T' ) {
             buffer_count = 0;
         }
-        buffer[buffer_count++] = c;
+        buffer[buffer_count] = c;
+        buffer_count++;
 
         // we should always read 19 bytes THxxxxxxxxxxxxxxxxMC
         if (buffer_count >= 20){
@@ -134,19 +139,36 @@ bool AP_Proximity_TeraRangerTowerEvo::read_sensor_data()
 
             //check if message has right CRC
             if (crc_crc8(buffer, 19) == buffer[19]){
-                update_sector_data(0,   UINT16_VALUE(buffer[2],  buffer[3]));   // d1
-                update_sector_data(45,  UINT16_VALUE(buffer[4],  buffer[5]));   // d2
-                update_sector_data(90,  UINT16_VALUE(buffer[6],  buffer[7]));   // d3
-                update_sector_data(135, UINT16_VALUE(buffer[8],  buffer[9]));   // d4
-                update_sector_data(180, UINT16_VALUE(buffer[10], buffer[11]));  // d5
-                update_sector_data(225, UINT16_VALUE(buffer[12], buffer[13]));  // d6
-                update_sector_data(270, UINT16_VALUE(buffer[14], buffer[15]));  // d7
-                update_sector_data(315, UINT16_VALUE(buffer[16], buffer[17]));  // d8
+                // Cache the distances into standard array elements instead of pushing immediately.
+                // Stale packets in the buffer will automatically be overwritten by newer ones.
+                latest_distances[0] = UINT16_VALUE(buffer[2],  buffer[3]);   // d1
+                latest_distances[1] = UINT16_VALUE(buffer[4],  buffer[5]);   // d2
+                latest_distances[2] = UINT16_VALUE(buffer[6],  buffer[7]);   // d3
+                latest_distances[3] = UINT16_VALUE(buffer[8],  buffer[9]);   // d4
+                latest_distances[4] = UINT16_VALUE(buffer[10], buffer[11]);  // d5
+                latest_distances[5] = UINT16_VALUE(buffer[12], buffer[13]);  // d6
+                latest_distances[6] = UINT16_VALUE(buffer[14], buffer[15]);  // d7
+                latest_distances[7] = UINT16_VALUE(buffer[16], buffer[17]);  // d8
 
+                packet_is_valid = true;
                 message_count++;
             }
         }
     }
+
+    // After the entire UART buffer is cleared, push only the latest tracking packet 
+    if (packet_is_valid) {
+        update_sector_data(0,   latest_distances[0]);
+        update_sector_data(45,  latest_distances[1]);
+        update_sector_data(90,  latest_distances[2]);
+        update_sector_data(135, latest_distances[3]);
+        update_sector_data(180, latest_distances[4]);
+        update_sector_data(225, latest_distances[5]);
+        update_sector_data(270, latest_distances[6]);
+        update_sector_data(315, latest_distances[7]);
+    }
+    // MODIFICATION END
+
     return (message_count > 0);
 }
 
