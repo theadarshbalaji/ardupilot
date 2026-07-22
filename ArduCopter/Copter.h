@@ -290,6 +290,10 @@ private:
         uint32_t last_glitch_cleared_ms;    // system time of last handle glitch recovery
         bool valid_for_logging;     // true if we have a desired target altitude
         bool reset_target;          // true if target should be reset because of change in surface being tracked
+        
+        // Custom asymmetric delay variables for sugarcane gap handling in AUTO mode
+        uint32_t gap_start_time_ms = 0;
+        float last_valid_surface_dist = 0.01;
     } surface_tracking;
 #endif
 
