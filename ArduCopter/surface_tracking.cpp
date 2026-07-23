@@ -51,7 +51,7 @@ void Copter::SurfaceTracking::update_surface_offset()
         }
 
         // Apply the filtered altitude to the drone's position controller
-        const float terrain_u_m = filtered_alt_m * copter.ahrs.get_rotation_body_to_ned().z.z;
+        const float terrain_u_m = filtered_alt_m * copter.ahrs.get_rotation_body_to_ned().c.z;
 
         copter.pos_control->set_pos_terrain_target_D_m(-terrain_u_m);
         last_update_ms = now_ms;
