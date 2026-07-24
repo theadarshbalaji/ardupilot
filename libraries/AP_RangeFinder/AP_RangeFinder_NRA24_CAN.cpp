@@ -15,14 +15,8 @@ void AP_RangeFinder_NRA24_CAN::update(void)
         state.last_reading_ms = AP_HAL::millis();
         update_status();
     } else if (AP_HAL::millis() - state.last_reading_ms > read_timeout_ms()) {
-        if (AP_HAL::millis() - last_heartbeat_ms > read_timeout_ms()) {
-            // no heartbeat, must be disconnected
-            set_status(RangeFinder::Status::NotConnected);
-        } else {
-            // Have heartbeat, just no data. Probably because this sensor doesn't output data when there is no relative motion infront of the radar.
-            // This case has special pre-arm check handling
-            set_status(RangeFinder::Status::NoData);
-        }
+        // No valid data received within the timeout period
+        set_status(RangeFinder::Status::NoData);
     }
 }
 
@@ -32,34 +26,25 @@ bool AP_RangeFinder_NRA24_CAN::handle_frame(AP_HAL::CANFrame &frame)
     WITH_SEMAPHORE(_sem);
     const uint32_t id = frame.id;
 
-    if (!is_correct_id(get_radar_id(id))) {
+    // Jiyi H30 terrain radars broadcast on 0x73C or 0x75C
+    if (id != 0x073CU && id != 0x075CU) {
         return false;
     }
 
-    switch (id & 0xFU) {
-        case 0xAU:
-            // heart beat in the form of Radar Status. The contents of this message aren't really useful so we won't parse them for now
-            last_heartbeat_ms = AP_HAL::millis();
-            break;
-
-        case 0xCU:
-        {
-            // Target Information
-            const float dist_m = (frame.data[2] * 0x100U + frame.data[3]) * 0.01;
-            const uint8_t snr = frame.data[7] - 128;
-
-            if ((snr_min != 0 && snr < uint16_t(snr_min.get()))) {
-                // too low signal strength
-                return false;
-            }
-            accumulate_distance_m(dist_m);
-        }
-            break;
-
-        default:
-            // not parsing these messages
-            break;
+    // Guard against memory bounds errors by enforcing the 6-byte payload requirement
+    if (frame.dlc != 6) {
+        return false;
     }
+
+    // Extract distance in mm using basic array indexing (Little Endian)
+    // 256U ensures compiler safety during unsigned math operations
+    uint16_t distance_mm = frame.data[1] + (frame.data[2] * 256U);
+    
+    // Convert to meters
+    const float dist_m = distance_mm * 0.001f;
+
+    // Push the distance reading to the ArduPilot frontend
+    accumulate_distance_m(dist_m);
 
     return true;
 }

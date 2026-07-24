@@ -24,7 +24,7 @@ const AP_Param::GroupInfo AP_Proximity_MR72_CAN::var_info[] = {
 
     // @Param: RECV_ID
     // @DisplayName: CAN receive ID
-    // @Description: The receive ID of the CAN frames. A value of zero means all IDs are accepted.
+    // @Description: The receive ID of the CAN frames. A value of zero means default Jiyi ID (0x00D6) is accepted.
     // @Range: 0 65535
     // @User: Advanced
     AP_GROUPINFO("RECV_ID", 1, AP_Proximity_MR72_CAN, receive_id, 0),
@@ -37,7 +37,8 @@ AP_Proximity_MR72_CAN::AP_Proximity_MR72_CAN(AP_Proximity &_frontend,
                                      AP_Proximity_Params& _params):
     AP_Proximity_Backend(_frontend, _state, _params)
 {
-    multican_MR72 = NEW_NOTHROW MultiCAN{FUNCTOR_BIND_MEMBER(&AP_Proximity_MR72_CAN::handle_frame, bool, AP_HAL::CANFrame &), AP_CAN::Protocol::RadarCAN, "MR72 MultiCAN"};
+    // Bound to the Jiyi radar but keeping the MR72 wrapper for build compatibility
+    multican_MR72 = NEW_NOTHROW MultiCAN{FUNCTOR_BIND_MEMBER(&AP_Proximity_MR72_CAN::handle_frame, bool, AP_HAL::CANFrame &), AP_CAN::Protocol::RadarCAN, "Jiyi MultiCAN"};
     if (multican_MR72 == nullptr) {
         AP_BoardConfig::allocation_error("Failed to create proximity multican");
     }
@@ -59,64 +60,60 @@ void AP_Proximity_MR72_CAN::update(void)
     }
 }
 
-// handler for incoming frames. These come in at 100Hz
+// handler for incoming frames
 bool AP_Proximity_MR72_CAN::handle_frame(AP_HAL::CANFrame &frame)
 {
     WITH_SEMAPHORE(_sem);
 
-
-    // check if message is coming from the right sensor ID
     const uint16_t id = frame.id;
+    
+    // Default Jiyi ID is 0x00D6
+    uint16_t expected_id = (receive_id > 0) ? (uint16_t)receive_id : 0x00D6;
 
-    if (receive_id > 0 && (get_radar_id(frame.id) != uint32_t(receive_id))) {
+    if (id != expected_id) {
         return false;
     }
 
-    switch (id & 0xFU) {
-    case 0xAU:
-        // number of objects
-        _object_count = frame.data[0];
-        _current_object_index = 0;
-        _temp_boundary.update_3D_boundary(state.instance, frontend.boundary);
-        _temp_boundary.reset();
+    // Process the distance payload directly
+    if (parse_distance_message(frame)) {
         last_update_ms = AP_HAL::millis();
-        break;
-    case 0xBU:
-        // obstacle data
-        parse_distance_message(frame);
-        break;
-    default:
-        break;
     }
 
     return true;
-
 }
 
 // parse a distance message from CAN frame
 bool AP_Proximity_MR72_CAN::parse_distance_message(AP_HAL::CANFrame &frame)
 {
-    if (_current_object_index >= _object_count) {
-        // should never happen
+    // The Jiyi R-21 radar sends 8 bytes
+    if (frame.dlc != 8) {
         return false;
     }
-    _current_object_index++;
 
-    Vector2f obstacle_fr;
-    // This parsing comes from the NanoRadar MR72 datasheet
-    obstacle_fr.x = ((frame.data[2] & 0x07U) * 256 + frame.data[3]) * 0.2 - 204.6;
-    obstacle_fr.y = (frame.data[1] * 32 + (frame.data[2] >> 3)) * 0.2 - 500;
-    const float yaw = correct_angle_for_orientation(wrap_360(degrees(atan2f(obstacle_fr.x, obstacle_fr.y))));
+    // Check header byte
+    if (frame.data[0] != 0xEA) {
+        return false;
+    }
 
-    const float objects_dist = obstacle_fr.length();
+    // Extract distance in mm using basic array indexing (Little Endian)
+    // Added 256U to ensure strict unsigned compiler math
+    uint16_t distance_mm = frame.data[1] + (frame.data[2] * 256U);
+    float objects_dist = distance_mm * 0.001f;
+
+    // Jiyi obstacle radars are mounted forward-facing (0 degrees)
+    const float yaw = 0.0f; 
 
     if (ignore_reading(yaw, objects_dist)) {
-        // obstacle is probably near ground or out of range
+        // obstacle is out of range based on min/max parameters
         return false;
     }
 
+    // Reset temporary boundary, add the new reading, and commit to the main boundary
+    _temp_boundary.reset();
     const AP_Proximity_Boundary_3D::Face face = frontend.boundary.get_face(yaw);
     _temp_boundary.add_distance(face, yaw, objects_dist);
+    _temp_boundary.update_3D_boundary(state.instance, frontend.boundary);
+    
     database_push(yaw, objects_dist);
     return true;
 }
